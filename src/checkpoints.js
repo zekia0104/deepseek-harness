@@ -18,6 +18,7 @@ import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BlobStore, hashContent } from "./store.js";
 import {
+  DEFAULT_MAX_FILE_BYTES,
   diffSnapshots,
   resolveInside,
   snapshot,
@@ -28,12 +29,19 @@ export class CheckpointStore {
   /**
    * @param {string} root - the workspace being tracked.
    * @param {string} [directory] - where the checkpoint data lives, relative to root.
+   * @param {{ ignore?: string[], maxBytes?: number }} [options]
+   *   `ignore` is glob patterns against the workspace-relative path. A workspace
+   *   containing a vendored toolchain -- a portable git, a downloaded SDK -- will
+   *   otherwise have every one of its binaries copied into the store by the first
+   *   capture.
    */
-  constructor(root, directory = ".guardrail") {
+  constructor(root, directory = ".guardrail", options = {}) {
     this.root = root;
     this.directory = join(root, directory);
     this.indexPath = join(this.directory, "checkpoints.json");
     this.blobs = new BlobStore(join(this.directory, "blobs"));
+    this.ignore = options.ignore ?? [];
+    this.maxBytes = options.maxBytes ?? DEFAULT_MAX_FILE_BYTES;
   }
 
   /** @returns {Promise<Array<Object>>} */
@@ -63,18 +71,37 @@ export class CheckpointStore {
     const previous = index[index.length - 1];
     const previousFiles = previous?.files ?? {};
 
-    const files = await walkFiles(this.root);
+    const files = await walkFiles(this.root, {
+      ignore: this.ignore,
+      maxBytes: this.maxBytes,
+    });
+    const previousStats = previous?.stats ?? {};
     const manifest = {};
+    const stats = {};
     let stored = 0;
+    let reused = 0;
 
     for (const file of files) {
+      const stamp = `${file.mtimeMs}:${file.size}`;
+      stats[file.path] = stamp;
+      const priorHash = previousFiles[file.path];
+
+      // Fast path: this path has the same size and mtime as it did at the last
+      // checkpoint, so its content cannot have changed and re-reading it would
+      // buy nothing. Without this, every capture re-reads the entire workspace.
+      if (priorHash !== undefined && previousStats[file.path] === stamp) {
+        manifest[file.path] = priorHash;
+        reused += 1;
+        continue;
+      }
+
       const content = await readFile(file.full);
       const hash = hashContent(content);
       manifest[file.path] = hash;
 
       // Only write blobs that are genuinely new: unchanged from the previous
       // checkpoint, or already present in the store.
-      if (previousFiles[file.path] === hash) continue;
+      if (priorHash === hash) continue;
       if (await this.blobs.has(hash)) continue;
       await this.blobs.put(content);
       stored += 1;
@@ -87,7 +114,7 @@ export class CheckpointStore {
 
     const changed = changes.added.length + changes.removed.length + changes.changed.length;
     if (previous && changed === 0) {
-      return { id: previous.id, noop: true, changes, stored: 0 };
+      return { id: previous.id, noop: true, changes, stored: 0, reused };
     }
 
     const checkpoint = {
@@ -96,10 +123,14 @@ export class CheckpointStore {
       turn: meta.turn ?? null,
       reason: meta.reason ?? "",
       files: manifest,
+      // Size and mtime per path, so the next capture can skip re-reading
+      // anything that has not changed. Kept beside `files` rather than inside
+      // it so a manifest stays a plain path-to-hash map.
+      stats,
     };
     index.push(checkpoint);
     await this.saveIndex(index);
-    return { id: checkpoint.id, noop: false, changes, stored };
+    return { id: checkpoint.id, noop: false, changes, stored, reused };
   }
 
   /** @returns {Promise<Array<Object>>} */

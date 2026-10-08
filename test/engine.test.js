@@ -198,3 +198,60 @@ test("checkpoints: rollback refuses a path that escapes the root", async () => {
   await store.saveIndex(index);
   await assert.rejects(() => store.rollback(index[0].id), /outside the workspace/);
 });
+
+test("checkpoints: ignore patterns keep a vendored toolchain out of the store", async () => {
+  // Without this, a workspace holding a portable git copied 112 MB of
+  // binaries into the store across three checkpoints on the machine this was
+  // built on.
+  const root = await makeWorkspace();
+  await write(root, "src/app.js", "const a = 1;\n");
+  await write(root, ".tooling/git/bin/git.exe", "BINARY".repeat(1000));
+  await write(root, "notes.log", "noise\n");
+
+  const store = new CheckpointStore(root, ".guardrail", {
+    ignore: [".tooling/**", "**/*.log"],
+  });
+  await store.capture({});
+
+  const index = await store.loadIndex();
+  const tracked = Object.keys(index[0].files);
+  assert.deepEqual(tracked, ["src/app.js"]);
+  const blobs = await walkFiles(join(root, ".guardrail", "blobs"));
+  assert.equal(blobs.length, 1);
+});
+
+test("checkpoints: an unchanged file is not re-read", async () => {
+  const root = await makeWorkspace();
+  await write(root, "stable.txt", "stable");
+  await write(root, "mutable.txt", "one\n");
+
+  const store = new CheckpointStore(root);
+  await store.capture({});
+
+  // Change one file. The other has the same size and mtime, so the second
+  // capture must reuse its recorded hash instead of reading it again.
+  await write(root, "mutable.txt", "two\n");
+  const second = await store.capture({});
+
+  assert.equal(second.reused, 1, "expected one file reused from the previous checkpoint");
+  assert.equal(second.changes.changed.includes("mutable.txt"), true);
+  assert.equal(second.changes.changed.includes("stable.txt"), false);
+
+  // The fast path must not corrupt the manifest: a rollback still restores both.
+  const index = await store.loadIndex();
+  await write(root, "stable.txt", "wrecked");
+  await store.rollback(index[index.length - 1].id);
+  assert.equal(await readFile(join(root, "stable.txt"), "utf8"), "stable");
+});
+
+test("checkpoints: a changed file is re-read even when its size is unchanged", async () => {
+  // mtime and size are a heuristic, so the case they cannot distinguish --
+  // same length, different content -- must still be caught.
+  const root = await makeWorkspace();
+  await write(root, "a.txt", "AAAA");
+  const store = new CheckpointStore(root);
+  await store.capture({});
+  await write(root, "a.txt", "BBBB");
+  const second = await store.capture({});
+  assert.deepEqual(second.changes.changed, ["a.txt"]);
+});

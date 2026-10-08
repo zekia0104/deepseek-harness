@@ -60,7 +60,15 @@ export async function walkFiles(root, options = {}) {
   const out = [];
 
   async function walk(directory) {
-    const entries = await readdir(directory, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      // An unreadable directory must not fail the whole walk. One permission
+      // denial anywhere in a workspace would otherwise mean no checkpoint is
+      // ever captured, which is worse than capturing most of one.
+      return;
+    }
     for (const entry of entries) {
       const full = join(directory, entry.name);
       const rel = relative(base, full).split(sep).join("/");
@@ -77,15 +85,19 @@ export async function walkFiles(root, options = {}) {
       if (ignoreNames.includes(entry.name)) continue;
       if (ignore.some((pattern) => matchGlob(rel, pattern))) continue;
 
-      let size;
+      let info;
       try {
-        size = (await stat(full)).size;
+        info = await stat(full);
       } catch {
         continue;
       }
-      if (size > maxBytes) continue;
+      if (info.size > maxBytes) continue;
 
-      out.push({ path: rel, full, size });
+      // mtimeMs is carried out so a caller can skip re-reading a file that has
+      // not changed since the last checkpoint. Hashing a workspace that holds a
+      // vendored toolchain on every tool call is the difference between instant
+      // and unusable.
+      out.push({ path: rel, full, size: info.size, mtimeMs: Math.round(info.mtimeMs) });
     }
   }
 

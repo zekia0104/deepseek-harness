@@ -50,6 +50,16 @@ const PATH_KEYS = [
   "source",
 ];
 
+/**
+ * Paths never worth checkpointing.
+ *
+ * A workspace that contains a vendored toolchain -- a portable git, a downloaded
+ * SDK -- otherwise has every one of its binaries copied into the store by the
+ * first capture. On the machine this was developed on that was 112 MB and 769
+ * files for three checkpoints.
+ */
+export const DEFAULT_IGNORE = [".tooling/**", ".cache/**", "**/*.log", "**/*.tmp"];
+
 export function workspaceRelative(workspace, value) {
   const absolute = isAbsolute(value) ? value : resolve(workspace, value);
   return relative(workspace, absolute).split(sep).join("/");
@@ -113,7 +123,10 @@ export function apply(ctx, config = {}) {
   const enforce = config.enforce === true;
   const rules =
     Array.isArray(config.rules) && config.rules.length > 0 ? config.rules : DEFAULT_RULES;
-  const store = new CheckpointStore(workspace, config.directory ?? ".guardrail");
+  const store = new CheckpointStore(workspace, config.directory ?? ".guardrail", {
+    ignore: config.ignore ?? DEFAULT_IGNORE,
+    maxBytes: config.maxBytes,
+  });
 
   const logger = typeof ctx?.logger === "function" ? ctx.logger("dsh-guardrail") : undefined;
   const say = (message) => {
