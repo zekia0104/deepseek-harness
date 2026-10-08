@@ -1,10 +1,11 @@
 /**
- * guardrail-probe (v2) — capture what the harness really gives a plugin.
+ * guardrail-probe (v3) — compact: field names plus shallow values only.
  *
- * v1 learned that `ctx.on` (a mixin accessor) read as falsy in the harness
- * while the same cordis exposes it in isolation. v2 stops guessing: it records
- * the typeof of every candidate API, registers handlers through every channel
- * that might work, and lets one tool call decide which one actually fires.
+ * v2 answered the API surface. v3 answers one question with a dozen lines:
+ * which field of the exec object carries the tool's arguments, and what does
+ * the post-execute result look like. The huge `agent` and `signal` objects are
+ * replaced with a one-line placeholder, because dumping them produced hundreds
+ * of lines to read one field name.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -23,13 +24,13 @@ function line(text) {
   }
 }
 
-function describe(value) {
+function shallow(value) {
   try {
     return inspect(value, {
-      depth: 5,
-      maxArrayLength: 40,
-      maxStringLength: 400,
-      breakLength: Infinity,
+      depth: 1,
+      maxArrayLength: 8,
+      maxStringLength: 160,
+      breakLength: 200,
       getters: false,
     });
   } catch {
@@ -37,64 +38,45 @@ function describe(value) {
   }
 }
 
-let events = 0;
-const MAX_EVENTS = 60;
+const OMITTED = new Set(["agent", "signal", "token"]);
 
 export const name = "guardrail-probe";
 
 export function apply(ctx) {
-  line(`\n=== apply() at ${new Date().toISOString()} ===`);
+  line(`\n=== apply() ${new Date().toISOString()} ===`);
 
-  // Every candidate API, by typeof, so nothing is assumed.
-  for (const key of [
-    "on", "once", "emit", "serial", "bail", "parallel", "waterfall",
-    "events", "logger", "registry", "reflect", "root", "baseUrl", "get", "provide", "tools",
-  ]) {
-    let kind;
-    try {
-      kind = typeof ctx?.[key];
-    } catch (error) {
-      kind = "THROWS: " + error.message;
+  const dump = (label, value) => {
+    if (!value || typeof value !== "object") {
+      line(`${label}: ${typeof value} ${shallow(value)}`);
+      return;
     }
-    line(`ctx.${key}: ${kind}`);
-  }
-
-  // Service access via ctx.get(), the fallback the loader itself documents.
-  for (const name of ["events", "tools", "logger"]) {
-    try {
-      const value = typeof ctx?.get === "function" ? ctx.get(name, false) : undefined;
-      line(`ctx.get('${name}', false): ${value === undefined ? "undefined" : typeof value + " " + (value?.constructor?.name ?? "")}`);
-    } catch (error) {
-      line(`ctx.get('${name}'): THROWS ${error.message}`);
+    const keys = Object.keys(value).sort();
+    line(`${label} keys: ${keys.join(", ")}`);
+    for (const key of keys) {
+      if (OMITTED.has(key)) {
+        line(`  ${key}: <${typeof value[key]}, omitted>`);
+        continue;
+      }
+      line(`  ${key}: ${shallow(value[key])}`);
     }
-  }
-
-  // Register observers through every channel that exists, and record which one
-  // accepted the registration.
-  const observe = (label, ...args) => {
-    if (events++ >= MAX_EVENTS) return;
-    line(`\n--- ${label} (${events}) ---`);
-    line(`arguments.length = ${args.length}`);
-    args.forEach((arg, index) => {
-      line(`  arg${index} [${typeof arg}${arg?.constructor ? " " + arg.constructor.name : ""}]:`);
-      line(describe(arg));
-    });
-    const last = args[args.length - 1];
-    if (typeof last === "function") return last();
   };
 
-  const pre = async (...args) => observe("tools/pre-execute", ...args);
-  const post = async (...args) => observe("tools/post-execute", ...args);
+  const on = ctx?.on ?? ctx?.events?.on;
 
-  if (typeof ctx?.events?.on === "function") {
-    ctx.events.on("tools/pre-execute", pre);
-    ctx.events.on("tools/post-execute", post);
-    line("registered via ctx.events.on");
-  }
-  if (typeof ctx?.on === "function") {
-    ctx.on("tools/pre-execute", pre);
-    ctx.on("tools/post-execute", post);
-    line("registered via ctx.on");
-  }
+  on?.("tools/pre-execute", async (...args) => {
+    line(`\n--- pre-execute (${args.length} args) ---`);
+    dump("exec", args[0]);
+    const next = args[args.length - 1];
+    if (typeof next === "function") return next();
+  });
+
+  on?.("tools/post-execute", async (...args) => {
+    line(`\n--- post-execute (${args.length} args) ---`);
+    dump("exec", args[0]);
+    dump("result", args[1]);
+    const next = args[args.length - 1];
+    if (typeof next === "function") return next();
+  });
+
   line("apply() complete");
 }
