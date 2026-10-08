@@ -1,0 +1,25 @@
+{
+  "name": "dsh-guardrail",
+  "version": "0.1.0",
+  "description": "Intelligent checkpoints, workspace safety guards and instant rollback for DeepSeek Harness.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/engine.js"
+  },
+  "scripts": {
+    "test": "node --test --test-isolation=none test/"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "checkpoint",
+    "rollback",
+    "guardrail",
+    "workspace-safety"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}
