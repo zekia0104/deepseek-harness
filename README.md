@@ -141,18 +141,20 @@ $env:ELECTRON_RUN_AS_NODE = '1'
 required in an environment that forbids the child processes the default runner
 spawns.
 
-## Why "no harness wiring yet" is the honest state
+The wiring is verified separately, against the harness's own cordis rather than a
+stand-in, because the engine test can prove the logic but not that the plugin
+attaches:
 
-The harness exposes `ctx.on("tools/pre-execute", (exec, next) => ...)` and
-`ctx.on("tools/post-execute", (exec, result, next) => ...)` as middleware, and
-registers tools via `ctx.tools.register({ name, description, parameters, ... })`.
-Those shapes are confirmed from the harness's own code. What has not been pinned
-down precisely enough to ship is the `exec` payload fields and the exact
-short-circuit semantics of the middleware — details that live in a
-`docs/architecture.md` not shipped in the compiled distribution, and that a
-single run against a real harness will confirm or refute. Guessing them here
-would repeat the failure mode this project exists to prevent: a plugin that
-loads cleanly, logs nothing, and does nothing.
+```powershell
+$env:ELECTRON_RUN_AS_NODE = '1'
+$env:DSH_APP_NODE_MODULES  = "$env:LOCALAPPDATA\Programs\DSH NEXT\resources\app\node_modules"
+& "$env:LOCALAPPDATA\Programs\DSH NEXT\DSH NEXT.exe" verification/integration.mjs
+```
+
+22 checks: warn mode passes through, enforce mode blocks and names the rule, a
+read is not checkpointed while a write is, a failed tool is not, and the rollback
+tool lists, diffs and restores. `DSH_APP_NODE_MODULES` is the only path that has
+to be supplied; everything else is derived from the script's own location.
 
 ## License
 
