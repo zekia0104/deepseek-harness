@@ -255,3 +255,33 @@ test("checkpoints: a changed file is re-read even when its size is unchanged", a
   const second = await store.capture({});
   assert.deepEqual(second.changes.changed, ["a.txt"]);
 });
+
+test("rollback never deletes an ignored path", async () => {
+  // The bug this guards against is data loss, not a wrong report. Rollback
+  // walked the whole tree and treated every ignored path as "appeared after the
+  // checkpoint", so restoring a checkpoint deleted the vendored toolchain the
+  // ignore list existed to protect -- on the workspace this was built for, 112 MB
+  // of MinGit that had never been checkpointed in the first place.
+  const root = await makeWorkspace();
+  await write(root, "src/app.js", "const a = 1;\n");
+  await write(root, ".tooling/git/mingw64/bin/git.exe", "TOOLCHAIN".repeat(200));
+
+  const store = new CheckpointStore(root, ".guardrail", { ignore: [".tooling/**"] });
+  const first = await store.capture({});
+
+  // An ignored path must not be reported as a difference either.
+  const before = await store.diff(first.id);
+  assert.deepEqual(before.added, [], "an ignored path must not show up as added");
+
+  await write(root, "src/app.js", "const a = 2;\n");
+  await store.capture({});
+  const result = await store.rollback(first.id);
+
+  assert.equal(await readFile(join(root, "src/app.js"), "utf8"), "const a = 1;\n");
+  assert.deepEqual(result.removed, [], "nothing outside the checkpoint's scope may be removed");
+  assert.equal(
+    await readFile(join(root, ".tooling/git/mingw64/bin/git.exe"), "utf8"),
+    "TOOLCHAIN".repeat(200),
+    "the ignored toolchain must survive a rollback",
+  );
+});

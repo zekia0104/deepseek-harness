@@ -153,7 +153,13 @@ export class CheckpointStore {
     const index = await this.loadIndex();
     const checkpoint = index.find((entry) => entry.id === id);
     if (!checkpoint) throw new Error(`unknown checkpoint: ${id}`);
-    const live = await snapshot(this.root);
+    // Scoped exactly like the capture. Without the same ignore list every
+    // ignored path reports as "added", which is both a wrong diff and the
+    // precondition for a rollback that deletes them.
+    const live = await snapshot(this.root, {
+      ignore: this.ignore,
+      maxBytes: this.maxBytes,
+    });
     return diffSnapshots(new Map(Object.entries(checkpoint.files)), live);
   }
 
@@ -187,7 +193,14 @@ export class CheckpointStore {
 
     const removed = [];
     if (removeAdded) {
-      const live = await walkFiles(this.root);
+      // Scoped exactly like the capture. Walking the whole tree here would treat
+      // every ignored path as "appeared after the checkpoint" and delete it --
+      // which, for a workspace holding a vendored toolchain, means deleting the
+      // toolchain.
+      const live = await walkFiles(this.root, {
+        ignore: this.ignore,
+        maxBytes: this.maxBytes,
+      });
       for (const file of live) {
         if (checkpoint.files[file.path] !== undefined) continue;
         await unlink(file.full);
